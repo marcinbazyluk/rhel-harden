@@ -10,7 +10,7 @@ ansible-playbook os-harden.yml
 
 ## Requirements
 
-- Run on RedHat Enterprise Linux only.
+- Run on RedHat Enterprise Linux only using rsyslog as the message logging utility.
 - Python 2.7 or later.
 
 ## Dependencies
