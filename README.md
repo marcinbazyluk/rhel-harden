@@ -21,6 +21,6 @@ None
 GPLv3
 
 ## Author Information
-Marcin Bazyluk/IMI/IBM, marcin.bazyluk@pl.ibm.com
+Marcin Bazyluk, bazyluk@gmail.com
 No support is given.
 
