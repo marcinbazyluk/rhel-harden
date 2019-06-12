@@ -1,0 +1,805 @@
+---
+- name: Harden the RHEL Operating System
+  hosts: test
+  remote_user: root
+  gather_facts: yes
+  vars_files:
+    - vars/os-vars.yml
+  roles:
+    - lqueryvg.chage
+  tasks:
+    - name: "2.1 PASS_MAX_DAYS in {{ login_defs }}"
+      lineinfile:
+        path: "{{ login_defs }}"
+        regexp: '^PASS_MAX_DAYS'
+        line: 'PASS_MAX_DAYS 90'
+    - name: "2.1 PASS_MAX_DAYS in {{ shadow_file }} - generate list of users"
+      shell: /usr/bin/cat {{ shadow_file }} | /usr/bin/awk -F':' '$2 != "*" && $2 != "!!" { print $1 }'
+      changed_when: false
+      register: shadow_users
+    - name: "2.1 PASS_MAX_DAYS in {{ shadow_file }} - apply setting"
+      chage:
+        user: '{{ item }}'
+        sp_max: 90
+      with_items:
+        - "{{ shadow_users.stdout_lines }}"
+    - name: "2.1 password complexity in {{ pamfile_system_auth }}"
+      lineinfile:
+        path: "{{ pamfile_system_auth }}"
+        regexp: 'password\s*requisite\s*pam_pwquality\.so.*'
+        line: >
+          password    requisite     pam_pwquality.so try_first_pass local_users_only
+          retry=3 authtok_type= minlen=8 dcredit=-1 ucredit=0 lcredit=-1 ocredit=0 reject_username
+    - name: "2.1 PASS_MIN_DAYS in {{ login_defs }}"
+      lineinfile:
+        path: "{{ login_defs }}"
+        regexp: '^PASS_MIN_DAYS'
+        line: 'PASS_MIN_DAYS 1'
+    - name: "2.1 PASS_MIN_DAYS in {{ shadow_file }}"
+      chage:
+        user: '{{ item }}'
+        sp_min: 1
+      with_items:
+        - "{{ shadow_users.stdout_lines }}"
+    - name: "2.1 Prevent reuse of 8 last passwords in {{ pamfile_system_auth }}"
+      lineinfile:
+        path: "{{ pamfile_system_auth }}"
+        regexp: '^password\s*sufficient\s*pam_unix\.so.*$'
+        line: 'password    sufficient    pam_unix.so sha512 shadow nullok try_first_pass use_authtok remember=7'
+    - name: "2.1 Prevent reuse of 8 last passwords in {{ pamfile_password_auth }}"
+      lineinfile:
+        path: "{{ pamfile_password_auth }}"
+        regexp: 'password\s*sufficient\s*pam_unix\.so.*'
+        line: 'password    sufficient    pam_unix.so sha512 shadow nullok try_first_pass use_authtok remember=7'
+    - name: "2.1 Prevent reuse of 8 last passwords (create /etc/security/opasswd)"
+      file:
+        path: /etc/security/opasswd
+        owner: root
+        group: root
+        mode: 0600
+    - name: "2.1 Ensure no null passwords in {{ shadow_file }}"
+      shell: /usr/bin/cat {{ shadow_file }} | /usr/bin/cut -d':' -f2 | /usr/bin/grep "^$"
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc != 1"
+    - name: "2.1 Ensure no null passwords in {{ shadow_file }} - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc != 1"
+      ignore_errors: true
+      failed_when: true
+    - name: "3.1 Business Use Notice (/etc/motd)"
+      template:
+        src: files/motd.j2
+        dest: /etc/motd
+    - name: "3.2 Include the UMASK line in {{ login_defs }}"
+      lineinfile:
+        path: "{{ login_defs }}"
+        regexp: '^UMASK\s+'
+        line: 'UMASK    077'
+    - name: "3.2 Create {{ ibmsinit }}"
+      blockinfile:
+        path: "{{ ibmsinit }}"
+        block: |
+          if [ $UID -gt 199 ]; then
+            umask 077
+          fi
+          TMOUT=1800
+          export TMOUT
+        create: yes
+        owner: root
+        group: root
+        mode: 0755
+    - name: "3.2 Ensure /etc/profile file exist."
+      file:
+        path: /etc/profile
+        owner: root
+        group: root
+        mode: 0644
+    - name: "3.2 Ensure files under /etc/skel/ don't override the umask setting."
+      shell: /usr/bin/grep umask /etc/skel/* 2>/dev/null; /usr/bin/grep umask /etc/skel/.* 2>/dev/null | /usr/bin/wc -l
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "3.2 Ensure files under /etc/skel/don't override the umask setting - debug"
+      debug:
+        msg:
+          - "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "4 Ensure {{ passwd_file }} does not contain passwords."
+      shell: /usr/bin/cat {{ passwd_file }} | /usr/bin/cut -d':' -f2 | /usr/bin/egrep -v '^x$'
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc != 1"
+    - name: "4 Ensure {{ passwd_file }} does not contain passwords - debug"
+      debug:
+        msg:
+          - "There should be no passwords stored in the {{ passwd_file }} file."
+          - "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc != 1"
+      ignore_errors: true
+      failed_when: true
+    - name: "4 Ensure {{ shadow_file }} contains encrypted passwords."
+      shell: /usr/bin/cat {{ shadow_file }} | /usr/bin/cut -d':' -f2 | /usr/bin/egrep -v '^\!\!$|^\*$|^\$[0-9]\$'
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc != 1"
+    - name: "4 Ensure {{ shadow_file }} contains encrypted passwords - debug"
+      debug:
+        msg:
+          - "There should be no clear-text passwords stored in the {{ shadow_file }} file."
+          - "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc != 1"
+      ignore_errors: true
+      failed_when: true
+    - name: "4 Ensure no FTP service and no CSH shell is installed."
+      yum:
+        name: "{{ packages }}"
+        state: absent
+      vars:
+        packages:
+        - proftpd
+        - pure-ftpd
+        - tftp-server
+        - vsftpd
+        - csh
+        - tcsh
+    - name: "4.1 Ensure SSH uses encryption ciphers approved by ITCS104."
+      lineinfile:
+        path: "{{ sshd_config }}"
+        line: "{{ item.line }}"
+        regexp: "{{ item.regexp }}"
+        insertafter: '#\s*Ciphers\s+'
+      with_items:
+        - { regexp: '^Ciphers\s+', line: 'Ciphers aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,arcfour' }
+        - { regexp: '^MACs\s+', line: 'MACs hmac-sha1,umac-64@openssh.com,hmac-ripemd160,hmac-sha2-256,hmac-sha2-512' }
+      notify: restart sshd service
+    - name: "4.1 Ensure 128-bit encryption for stored user passwords - part 1 of 2."
+      shell: /usr/bin/grep "^password\s*required\s*pam_unix.so" /etc/pam.d/*
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc != 1"
+      no_log: true
+    - name: "4.1 Ensure 128-bit encryption for stored user passwords - part 1 of 2 - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc != 1"
+      ignore_errors: true
+      failed_when: true
+    - name: "4.1 Ensure 128-bit encryption for stored user passwords - part 2 of 2."
+      shell: /usr/bin/grep "^password\s*sufficient\s*pam_unix.so" /etc/pam.d/* | /usr/bin/egrep -v "sha512 shadow"
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc != 1"
+      no_log: true
+    - name: "4.1 Ensure 128-bit encryption for stored user passwords - part 2 of 2 - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc != 1"
+      ignore_errors: true
+      failed_when: true
+    - name: "4.1 SSH private keys permissions - generate list of users."
+      shell: cat {{ passwd_file }} | /usr/bin/awk -F':' '$7 != "/sbin/nologin" && $7 != "/bin/sync" && $7 != "/sbin/shutdown" && $7 != "/sbin/halt" { print $1 }'
+      changed_when: false
+      register: sshkeys_users
+    - name: "4.1 SSH private keys permissions - generate list of home directories."
+      shell: /usr/bin/cat {{ passwd_file }} | /usr/bin/awk -F':' '$7 != "/sbin/nologin" && $7 != "/bin/sync" && $7 != "/sbin/shutdown" && $7 != "/sbin/halt" { print $6 }'
+      changed_when: false
+      register: sshkeys_homes
+    - name: "4.1 SSH private keys permissions - check RSA file permissions."
+      file:
+        path: "{{ item.1 }}/.ssh/id_rsa"
+        owner: "{{ item.0 }}"
+        mode: 0600
+        state: file 
+      loop: "{{ sshkeys_users.stdout_lines|zip(sshkeys_homes.stdout_lines)|list }}"
+      failed_when: false
+    - name: "4.1 SSH private keys permissions - check DSA file permissions."
+      file:
+        path: "{{ item.1 }}/.ssh/id_dsa"
+        owner: "{{ item.0 }}"
+        mode: 0600
+        state: file
+      loop: "{{ sshkeys_users.stdout_lines|zip(sshkeys_homes.stdout_lines)|list }}"
+      failed_when: false
+    - name: "4.1 SSH private keys permissions - check ECDSA file permissions."
+      file:
+        path: "{{ item.1 }}/.ssh/id_ecdsa"
+        owner: "{{ item.0 }}"
+        mode: 0600
+        state: file
+      loop: "{{ sshkeys_users.stdout_lines|zip(sshkeys_homes.stdout_lines)|list }}"
+      failed_when: false
+    - name: "4.1 SSH private keys permissions - check ED25519 file permissions."
+      file: 
+        path: "{{ item.1 }}/.ssh/id_ed25519"
+        owner: "{{ item.0 }}"
+        mode: 0600
+        state: file
+      loop: "{{ sshkeys_users.stdout_lines|zip(sshkeys_homes.stdout_lines)|list }}"
+      failed_when: false
+    - name: "5.1 Permissions on the ~root/.rhosts file."
+      file:
+        path: "~root/.rhosts"
+        owner: root
+        mode: 0600
+        state: file
+      failed_when: false
+    - name: "5.1 Permissions on the ~root/.netrc file."
+      file:
+        path: "~root/.netrc"
+        owner: root
+        mode: 0600
+        state: file
+      failed_when: false
+    - name: "5.1 Permissions on the / directory."
+      file:
+        path: "/"
+        mode: "o-w"
+        state: directory
+    - name: "5.1 Permissions on the /usr directory."
+      file:
+        path: "/usr"
+        mode: "o-w"
+        state: directory
+    - name: "5.1 Permissions on the /etc directory."
+      file:
+        path: "/etc"
+        mode: "o-w"
+        state: directory
+    - name: "5.1 Permissions on the {{ shadow_file }} file."
+      file:
+        path: "{{ shadow_file }}"
+        mode: "u-x,g-rwx,o-rwx"
+        state: file
+    - name: "5.1 Permissions on the /var directory."
+      file:
+        path: "/var"
+        mode: "o-w"
+        state: directory
+    - name: "5.1 Permissions on the /var/tmp directory."
+      file:
+        path: "/var/tmp"
+        mode: 01777
+        state: directory
+    - name: "5.1 Permissions on the /var/log directory."
+      file:
+        path: "/var/log"
+        mode: "o-w"
+        state: directory
+    - name: "5.1 Permissions on the /var/* directories - generate list of directories"
+      shell: /usr/bin/find /var -mindepth 1 -maxdepth 1 -type d ! -perm 01777
+      changed_when: false
+      register: var_subdirs
+    - name: "5.1 Permissions on the /var/* directories - apply settings"
+      file:
+        path: "{{ item }}"
+        mode: "o-w"
+        state: directory
+      with_items:
+        - "{{ var_subdirs.stdout_lines }}"
+    - name: "5.1 Permissions on the /var/log/tallylog file."
+      file:
+        path: "/var/log/tallylog"
+        mode: "u-x,g-rwx,o-rwx"
+        state: file
+    - name: "5.1 Permissions on the /var/log/messages file."
+      file:
+        path: "/var/log/messages"
+        mode: "g-w,o-w"
+        state: file
+    - name: "5.1 Permissions on the /var/log/wtmp file."
+      file:
+        path: "/var/log/wtmp"
+        owner: root
+        group: utmp
+        mode: 0664
+        state: file
+    - name: "5.1 Permissions on the /var/log/wtmp file - ensure the utmp group has no members"
+      shell: /usr/bin/cat {{ group_file }} | /usr/bin/grep utmp | /usr/bin/cut -d':' -f4
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != ""
+    - name: "5.1 Permissions on the /var/log/wtmp file - ensure the utmp group has no members - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != ""
+      ignore_errors: true
+      failed_when: true
+    - name: "5.1 Permissions on the /var/log/secure file."
+      file:
+        path: "/var/log/secure"
+        mode: "g-w,o-rw"
+        state: file
+    - name: "5.1 Permissions on the /tmp directory."
+      file:
+        path: "/tmp"
+        mode: 01777
+        state: directory
+    - name: "5.1 Permissions on the /etc/snmpd/snmpd.conf file."
+      file:
+        path: "/etc/snmpd/snmpd.conf"
+        mode: "u-x,g-wx,o-rwx"
+        state: file
+      failed_when: false
+    - name: "5.1 Ensure /etc/inittab is empty."
+      shell: /usr/bin/cat /etc/inittab | /usr/bin/egrep -v "\#"
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc == 0"
+    - name: "5.1 Ensure /etc/inittab is empty - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc == 0"
+      ignore_errors: true
+      failed_when: true
+    - name: "5.1 Ensure /var/spool/cron/root doesn't exist."
+      file:
+        path: /var/spool/cron/root
+        state: absent
+    - name: "5.1 Ensure /var/spool/cron/tabs/root doesn't exist."
+      file:
+        path: /var/spool/cron/tabs/root
+        state: absent
+    - name: "5.1 Entries in /etc/crontab must specify full script paths"
+      shell: /usr/bin/cat /etc/crontab | /usr/bin/egrep -v "^\#|^[A-Z]|^$" | /usr/bin/awk '{ print $7 }' | /usr/bin/egrep -v "^/"
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc == 0"
+    - name: "5.1 Entries in /etc/crontab must specify full script paths - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc == 0"
+      ignore_errors: false
+      failed_when: true
+    - name: "5.1 Entries in /etc/cron.d/* must specify full script paths - examine /etc/cron.d/0hourly separately"
+      lineinfile:
+        path: "/etc/cron.d/0hourly"
+        regexp: 'run-parts /etc/cron.hourly'
+        line: '01 * * * * root /usr/bin/run-parts /etc/cron.hourly'
+    - name: "5.1 Entries in /etc/cron.d/* must specify full script paths"
+      shell: /usr/bin/cat /etc/cron.d/* | /usr/bin/egrep -v "^\#|^[A-Z]|^$" | /usr/bin/awk '{ print $7 }' | /usr/bin/egrep -v "^/"
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc == 0"
+    - name: "5.1 Entries in /etc/cron.d/* must specify full script paths - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc == 0"
+      ignore_errors: false
+      failed_when: true
+    - name: "5.1 Entries in /etc/xinetd.conf must specify full script paths"
+      shell: /usr/bin/cat /etc/xinetd.conf  | /usr/bin/egrep "^\s*server\s*=" | /usr/bin/egrep -v "=\s*/"
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc == 0"
+    - name: "5.1 Entries in /etc/xinetd.conf must specify full script paths - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc == 0"
+      ignore_errors: false
+      failed_when: true
+    - name: "5.1 Entries in /etc/xinetd.d/* must specify full script paths"
+      shell: /usr/bin/cat /etc/xinetd.d/* | /usr/bin/egrep "^\s*server\s*=" | /usr/bin/egrep -v "=\s*/"
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: "cmdln.rc == 0"
+    - name: "5.1 Entries in /etc/xinetd.d/* must specify full script paths - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: "cmdln.rc == 0"
+      ignore_errors: false
+      failed_when: true
+    - name: "5.1 Set permissions of scripts called by /etc/crontab - generate list of files"
+      shell: /usr/bin/cat /etc/crontab | /usr/bin/egrep -v "^\#|^[A-Z]|^$" | /usr/bin/awk '{ print $7 }'
+      changed_when: false
+      register: crontab_scripts
+    - name: "5.1 Set permissions of scripts called by /etc/cron.d/* - generate list of files"
+      shell: /usr/bin/cat /etc/cron.d/* | /usr/bin/egrep -v "^\#|^[A-Z]|^$" | /usr/bin/awk '{ print $7 }'
+      changed_when: false
+      register: crond_scripts
+    - name: "5.1 Set permissions of scripts called by /etc/xinetd.conf - generate list of files"
+      shell: /usr/bin/cat /etc/xinetd.conf  | /usr/bin/egrep "^\s*server\s*=" | /usr/bin/awk '{ print $3 }'
+      changed_when: false
+      register: xinetd_scripts
+    - name: "5.1 Set permissions of scripts called by /etc/xinetd.d/* - generate list of files"
+      shell: /usr/bin/cat /etc/xinetd.d/* | /usr/bin/egrep "^\s*server\s*=" | /usr/bin/awk '{ print $3 }'
+      changed_when: false
+      register: xinetdd_scripts
+    - name: "5.1 Set permissions of scripts called by /etc/rc.d/rc[2-9].d/* - generate list of files"
+      shell: /usr/bin/find /etc/rc.d/rc[2-9].d/* -type l -exec /usr/bin/realpath {} \; | /usr/bin/sort | /usr/bin/uniq
+      changed_when: false
+      register: rcd_scripts
+    - name: "5.1 Set permissions of scripts in /etc/init.d/ - generate list of files"
+      shell: ls /etc/init.d/*
+      changed_when: false
+      register: initd_scripts
+    - name: "5.1 Set permissions of scripts called by multiple services - remove old list of dirs & files"
+      file:
+        path: "{{ all_with_parent_list }}"
+        state: absent
+      changed_when: false
+    - name: "5.1 Set permissions of scripts called by multiple services - copy python script"
+      copy:
+        src: python/get_all_parent_dirs.py
+        dest: /tmp/get_all_parent_dirs.py
+        owner: root
+        group: root
+        mode: 0700
+    - name: "5.1 Set permissions of scripts called by multiple services - generate list of dirs & files"
+      command: /tmp/get_all_parent_dirs.py {{ item }} {{ all_with_parent_list }}
+      with_items:
+        - "{{ crontab_scripts.stdout_lines }}"
+        - "{{ crond_scripts.stdout_lines }}"
+        - "{{ xinetd_scripts.stdout_lines }}"
+        - "{{ xinetdd_scripts.stdout_lines }}"
+        - "{{ rcd_scripts.stdout_lines }}"
+        - "{{ initd_scripts.stdout_lines }}"
+      changed_when: false
+    - name: "5.1 Set permissions of scripts called by multiple services - load list of dirs & files into a variable"
+      command: /usr/bin/cat {{ all_with_parent_list }}
+      register: all_with_parent_list_from_file
+      changed_when: false
+    - name: "5.1 Set permissions of scripts called by multiple services - apply setting"
+      file:
+        path: "{{ item }}"
+        mode: "g-w,o-w"
+      with_items: "{{ all_with_parent_list_from_file.stdout_lines }}"
+    - name: "5.2 Include pam.deny.so in {{ pamfile_other }} (1 of 2)"
+      lineinfile:
+        path: "{{ pamfile_other }}"
+        regexp: '^auth\s*[a-z]+\s*pam_deny\.so'
+        line: 'auth     required       pam_deny.so'
+    - name: "5.2 Include pam.deny.so in {{ pamfile_other }} (2 of 2)"
+      lineinfile:
+        path: "{{ pamfile_other }}"
+        regexp: '^account\s*[a-z]+\s*pam_deny\.so'
+        line: 'account  required       pam_deny.so'
+    - name: "5.2 Include pam.deny.so in {{ pamfile_password_auth }} (1 of 2)"
+      lineinfile:
+        path: "{{ pamfile_password_auth }}"
+        regexp: '^auth\s*[a-z]+\s*pam_deny\.so'
+        line: 'auth        required      pam_deny.so'
+    - name: "5.2 Include pam.deny.so in {{ pamfile_password_auth }} (2 of 2)"
+      lineinfile:
+        path: "{{ pamfile_password_auth }}"
+        regexp: '^account\s*[a-z]+\s*pam_deny\.so'
+        line: 'account     required      pam_deny.so'
+    - name: "5.4 Limit consecutive invalid login attempts to 5 in {{ pamfile_system_auth }} (1 of 2)"
+      lineinfile:
+        path: "{{ pamfile_system_auth }}"
+        regexp: '^auth\s*required\s*pam_tally2.so'
+        line: 'auth        required      pam_tally2.so deny=5'
+        insertbefore: '^auth\s*sufficient'
+        firstmatch: yes
+    - name: "5.4 Limit consecutive invalid login attempts to 5 in {{ pamfile_system_auth }} (2 of 2)"
+      lineinfile:
+        path: "{{ pamfile_system_auth }}"
+        regexp: '^account\s*required\s*pam_tally2.so'
+        line: 'account     required      pam_tally2.so'
+        insertbefore: '^account\s*sufficient'
+        firstmatch: yes
+    - name: "5.4 Limit consecutive invalid login attempts to 5 in {{ pamfile_password_auth }} (1 of 2)"
+      lineinfile:
+        path: "{{ pamfile_password_auth }}"
+        regexp: '^auth\s*required\s*pam_tally2.so'
+        line: 'auth        required      pam_tally2.so deny=5'
+        insertbefore: '^auth\s*sufficient'
+        firstmatch: yes
+    - name: "5.4 Limit consecutive invalid login attempts to 5 in {{ pamfile_password_auth }} (2 of 2)"
+      lineinfile:
+        path: "{{ pamfile_password_auth }}"
+        regexp: '^account\s*required\s*pam_tally2.so'
+        line: 'account     required      pam_tally2.so'
+        insertbefore: '^account\s*sufficient'
+        firstmatch: yes
+    - name: "6.1 Requirements for system access logging through rsyslog (1 of 3)"
+      lineinfile:
+        path: "{{ rsyslog_conf }}"
+        regexp: '^\$ActionFileDefaultTemplate'
+        line: '$ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat'
+        insertbefore: '^[\s\#]*RULES'
+        firstmatch: yes
+    - name: "6.1 Requirements for system access logging through rsyslog (2 of 3)"
+      lineinfile:
+        path: "{{ rsyslog_conf }}"
+        regexp: '^\*.info.*$'
+        line: '*.info;mail.none;authpriv.none;cron.none                /var/log/messages'
+        insertafter: '^[\s\#]*RULES'
+    - name: "6.1 Requirements for system access logging through rsyslog (3 of 3)"
+      lineinfile:
+        path: "{{ rsyslog_conf }}"
+        regexp: '^authpriv.*.*$'
+        line: 'authpriv.*                                              /var/log/secure'
+        insertafter: '^[\s\#]*RULES'
+    - name: "6.1 Log rotation for /var/log/messages (1 of 2)"
+      lineinfile:
+        path: /etc/logrotate.d/syslog
+        line: '/var/log/messages'
+        state: absent
+    - name: "6.1 Log rotation for /var/log/messages (2 of 2)"
+      blockinfile:
+        path: /etc/logrotate.d/syslog
+        block: |
+          /var/log/messages {
+            weekly
+            rotate 13
+            compress
+            minsize 1M
+            create 0640 root nagios
+          }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK for /var/log/messages"
+    - name: "6.1 Log rotation for /var/log/wtmp (1 of 2)"
+      replace:
+        path: /etc/logrotate.conf
+        regexp: '^/var/log/wtmp[^}]+}'
+        replace: ''
+    - name: "6.1 Log rotation for /var/log/wtmp (2 of 2)"
+      copy:
+        dest: /etc/logrotate.d/wtmp
+        mode: 0644
+        owner: root
+        group: root
+        content: |
+          /var/log/wtmp {
+            weekly
+            rotate 13
+            compress
+            minsize 1M
+            create 0664 root utmp
+          }
+    - name: "6.1 Log rotation for /var/log/tallylog"
+      copy:
+        dest: /etc/logrotate.d/tallylog
+        mode: 0644
+        owner: root
+        group: root
+        content: |
+          /var/log/tallylog {
+            weekly
+            rotate 13
+            compress
+            minsize 1M
+            create 0600 root root
+          }
+    - name: "6.1 Log rotation for /var/log/boot.log"
+      copy:
+        dest: /etc/logrotate.d/bootlog
+        mode: 0644
+        owner: root
+        group: root
+        content: |
+          /var/log/boot.log {
+            missingok
+            daily
+            copytruncate
+            rotate 90
+            compress
+            notifempty
+          }
+    - name: "6.1 Log rotation for /var/log/spooler (1 of 2)"
+      replace:
+        path: /etc/logrotate.d/syslog
+        regexp: '^/var/log/spooler[^}]+}'
+        replace: ''
+    - name: "6.1 Log rotation for /var/log/spooler (2 of 2)"
+      blockinfile:
+        path: /etc/logrotate.d/syslog
+        block: |
+          /var/log/spooler {
+            missingok
+            sharedscripts
+            postrotate
+              /bin/kill -HUP `cat /var/run/syslogd.pid 2> /dev/null` 2> /dev/null || true
+            endscript
+            weekly
+            rotate 13
+            compress
+            notifempty
+          }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK for /var/log/spooler"
+    - name: "6.1 Log rotation for other files used by rsyslogd - generate files list"
+      shell: /usr/bin/cat /etc/rsyslog.conf | /usr/bin/egrep "^auth[,\.]|^authpriv[,\.]|^cron[,\.]|^daemon[,\.]|^kern[,\.]lpr[,\.]|^mail[,\.]|^mark[,\.]|^news[,\.]|^security[,\.]|^syslog[,\.]|^user[,\.]|^uucp[,\.]|^local[0-7][,\.]|^\*[,\.]" | /usr/bin/awk '$2 ~ /^[-]*\// { print $2 }' | /usr/bin/sed 's/^-//' | /usr/bin/sort | /usr/bin/uniq | /usr/bin/egrep -v "^/var/log/boot\.log\s*$|^/var/log/messages\s*$|^/var/log/spooler\s*$"
+      changed_when: false
+      register: rsyslog_files
+    - name: "6.1 Log rotation for other files used by rsyslogd - remove old settings"
+      lineinfile:
+        path: /etc/logrotate.d/syslog
+        line: "{{ item }}"
+        state: absent
+      with_items:
+        - "{{ rsyslog_files.stdout_lines }}"
+    - name: "6.1 Log rotation for other files used by rsyslogd - apply settings"
+      blockinfile:
+        dest: /etc/logrotate.d/syslog
+        block: |
+          {{ item }} {
+            weekly
+            rotate 13
+            compress
+            minsize 1M
+            create 0600 root root
+          }
+        marker: "# {mark} ANSIBLE MANAGED BLOCK for {{ item }}"
+      with_items:
+        - "{{ rsyslog_files.stdout_lines }}"
+    - name: "8 Permissions of /etc/exports file."
+      file:
+        path: /etc/exports
+        owner: root
+        group: root
+        mode: 0644
+    - name: "8 Content of /etc/exports file."
+      shell: /usr/bin/cat /etc/exports | /usr/bin/wc -l
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "8 Content of /etc/exports file - debug"
+      debug:
+        msg: "Examine the contents of /etc/exports manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "8 Ensure file /etc/hosts.equiv doesn't exist."
+      file:
+        path: /etc/hosts.equiv
+        state: absent
+    - name: "8 Ensure file /etc/pam.d/rlogin doesn't exist."
+      file:
+        path: /etc/pam.d/rlogin
+        state: absent
+    - name: "8 Ensure file /etc/pam.d/rsh doesn't exist."
+      file:
+        path: /etc/pam.d/rsh
+        state: absent
+    - name: "8 Ensure rexd daemon is disabled."
+      shell: /usr/bin/ps -ef | /usr/bin/grep rex | /usr/bin/egrep -v grep | /usr/bin/wc -l
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "8 Ensure rexd daemon is disabled - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "8 Disable multiple xinetd services."
+      shell: /usr/bin/grep "^\s*disable\s*=\s*no" /etc/xinetd.d/* | /usr/bin/egrep -v /etc/xinetd.d/nrpe | /usr/bin/wc -l
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "8 Disable multiple xinetd services - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "8 Ensure SNMP service is not running."
+      shell: /usr/bin/ps -ef | /usr/bin/grep -i snmp | /usr/bin/egrep -v grep | /usr/bin/wc -l
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "8 Ensure SNMP service is not running - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "8 multiple settings in {{ sysctl_conf }}"
+      lineinfile:
+        path: "{{ sysctl_conf }}"
+        create: yes
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        owner: root
+        group: root
+        mode: 0644
+      with_items:
+        - { regexp: '^net.ipv4.tcp_syncookies', line: 'net.ipv4.tcp_syncookies=1' }
+        - { regexp: '^net.ipv4.icmp_echo_ignore_broadcasts', line: 'net.ipv4.icmp_echo_ignore_broadcasts=1' }
+        - { regexp: '^net.ipv4.conf.all.accept_redirects', line: 'net.ipv4.conf.all.accept_redirects=0' }
+      notify: load sysctl settings
+    - name: "8 Ensure yppasswd daemon is not running."
+      shell: /usr/bin/ps -ef | /usr/bin/grep -i ypp | /usr/bin/egrep -v grep | /usr/bin/wc -l
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "8 Ensure yppasswd daemon is not running - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "8 Ensure NIS is not in use."
+      shell: /usr/bin/rpm -qa | /usr/bin/grep ^yp | /usr/bin/wc -l
+      args:
+        warn: False
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "8 Ensure NIS is not in use - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "8 Ensure checksum tools are installed."
+      yum:
+        name: "{{ packages }}"
+        state: present
+      vars:
+        packages:
+        - openssl
+        - coreutils
+    - name: "8 Ensure the login shells configured for users support timeout."
+      shell: /usr/bin/cat {{ passwd_file }} | /usr/bin/cut -d':' -f7 | /usr/bin/egrep -v "/sbin/nologin|/bin/bash|/bin/sync|/sbin/halt|/sbin/shutdown" | /usr/bin/wc -l
+      register: cmdln
+      changed_when: false
+      ignore_errors: true
+      failed_when: cmdln.stdout != "0"
+    - name: "8 Ensure the login shells configured for users support timeout - debug"
+      debug:
+        msg: "Follow the documentation to apply this step manually on the host."
+      when: cmdln.stdout != "0"
+      ignore_errors: true
+      failed_when: true
+    - name: "8 Ensure {{ ibmsinit }} is invoked through /etc/profile - remove old settings."
+      replace:
+        path: /etc/profile
+        regexp: '^for\s+.*do\n[^,]+^done$'
+        replace: ''
+    - name: "8 Ensure {{ ibmsinit }} is invoked through /etc/profile - apply new settings."
+      blockinfile:
+        path: /etc/profile
+        block: |
+          for i in /etc/profile.d/*.sh /etc/profile.d/sh.local ; do
+            if [ -r "$i" ]; then
+              if [ "${-#*i}" != "$-" ]; then
+                . "$i"
+              else
+                . "$i" >/dev/null
+              fi
+            fi
+          done
+        insertbefore: '^\s*unset\s+i\s*$'
+    - name: "8 Ensure TMOUT setting in {{ ibmsinit }} is not overridden elsewhere."
+      lineinfile:
+        path: "{{ item }}"
+        regexp: 'TMOUT\s*='
+        state: absent
+      with_items:
+        - /etc/skel/.login
+        - /etc/skel/.profile
+        - /etc/skel/.bashrc
+        - /etc/skel/.cshrc
+        - /etc/skel/.bash_profile
+        - /etc/skel/.bash_login
+        - /etc/skel/.tcshrc
+      
+  handlers:
+    - name: load sysctl settings
+      shell: /usr/sbin/sysctl -p {{ sysctl_conf }}
+    - name: restart sshd service
+      service:
+        name: sshd
+        state: restarted
