@@ -6,7 +6,7 @@ group_file: /etc/group
 pamfile_system_auth: /etc/pam.d/system-auth
 pamfile_password_auth: /etc/pam.d/password-auth
 pamfile_other: /etc/pam.d/other
-sysctl_conf: /etc/sysctl.d/10-icds.conf
+sysctl_conf: /etc/sysctl.d/10-extra.conf
 ibmsinit: /etc/profile.d/IBMsinit.sh
 all_with_parent_list: /tmp/all_with_parent_list.txt
 rsyslog_conf: /etc/rsyslog.conf
